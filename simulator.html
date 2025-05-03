@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Epoxy Mezuzah Simulator - Realistic Elements</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            overflow: hidden; /* Prevent scrollbars */
+            background-color: #f0f0f0; /* Light gray background */
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        canvas {
+            display: block; /* Prevent extra space below canvas */
+        }
+        /* Info box styling */
+        #info {
+            position: absolute;
+            bottom: 10px; /* Move info box to bottom */
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            z-index: 100;
+        }
+        /* Ensure lil-gui is visible */
+        .lil-gui {
+             z-index: 101 !important; /* Make sure GUI is on top */
+             font-size: 14px; /* Adjust font size if needed */
+             max-height: 90vh; /* Prevent GUI from being too tall */
+             overflow-y: auto; /* Allow scrolling if needed */
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div id="container"></div>
+    <div id="info">Drag mouse to rotate, scroll to zoom</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/",
+                "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.19.1/dist/lil-gui.esm.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        // Import necessary modules
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+        import GUI from 'lil-gui';
+
+        // --- Module Scope Variables ---
+        let scene, camera, renderer, controls;
+        let mezuzahGroup, elementsGroup, shinGroup; // Main groups
+        let wheatGroup, leafGroup, pebblesGroup, sandGroup; // Sub-groups for elements
+        let mezuzahMesh, shinMaterial; // Controlled meshes/materials
+        let gui; // GUI instance
+        let textureLoader; // Texture loader instance
+
+        // --- Textures ---
+        // Using placeholders - replace with actual URLs for real look
+        // NOTE: For pebbles, we won't use a texture, just colored spheres.
+        const textures = {
+            wheat: 'https://placehold.co/64x200/F5DEB3/8B4513?text=Wheat',
+            leaf: 'https://placehold.co/100x80/90EE90/006400?text=Leaf',
+            // Pebble texture removed - using geometry + material color
+            sand_colors: [ // Using texture for sand color variation
+                'https://placehold.co/16x16/FFD700/ccad00?text=.', // Gold
+                'https://placehold.co/16x16/ADD8E6/87ceeb?text=.', // Light Blue
+                'https://placehold.co/16x16/FFA07A/e9967a?text=.', // Light Salmon
+                'https://placehold.co/16x16/F5F5DC/dcdcdc?text=.'  // Beige
+            ]
+        };
+        const loadedTextures = {}; // Cache for loaded textures
+
+        // --- Control Parameters ---
+        const params = {
+            // Epoxy Material adjustments for better visibility
+            epoxyColor: 0xFAFAFF, // Slightly brighter base
+            epoxyOpacity: 0.85,   // Slightly more transparent
+            epoxyRoughness: 0.05, // Smoother surface
+            epoxyIOR: 1.45,       // Slightly lower IOR
+
+            shinColor: 0x444444,
+
+            // Wheat Controls
+            wheatVisible: true,
+            wheatSize: 3.0,
+            wheatPosX: -0.3, wheatPosY: -2.0, wheatPosZ: 0.0,
+
+            // Leaf Controls
+            leafVisible: true,
+            leafSize: 1.5,
+            leafPosX: 0.3, leafPosY: 1.0, leafPosZ: 0.1,
+
+            // Pebble Controls - Using Spheres now
+            pebbleVisible: true,
+            pebbleCount: 25,
+            pebbleBaseSize: 0.12, // Base size before randomization
+            pebbleSizeVariation: 0.5, // Percentage variation (0 to 1)
+            pebbleColor: 0x8c7b6b, // Natural pebble color
+            pebbleRoughness: 0.7,
+            pebbleSpread: 0.8,
+
+            // Sand Controls
+            sandVisible: true,
+            sandCount: 150, // Increased count for better density
+            sandGrainSize: 0.04, // Slightly smaller grains
+            sandRoughness: 0.85, // Rougher sand
+            sandSpread: 0.9,
+
+            regenerateElements: function() {
+                updateAllElements();
+            }
+        };
+
+        // --- Constants ---
+        const mezuzahHeight = 10;
+        const mezuzahWidth = 1.5;
+        const mezuzahDepth = 1;
+        const mezuzahRadius = Math.min(mezuzahWidth, mezuzahDepth) / 2 * 0.9;
+        const mezuzahSegments = 5;
+        const elementPadding = 0.1;
+
+        // --- Initialization Function ---
+        function init() {
+            // 0. Texture Loader
+            textureLoader = new THREE.TextureLoader();
+            preloadTextures();
+
+            // 1. Scene Setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0);
+
+            // 2. Camera Setup
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 3, 12); // Adjusted camera slightly
+
+            // 3. Renderer Setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            // 4. Lighting (Slightly adjusted for better internal visibility)
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.9); // Brighter ambient
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.8); // Stronger directional
+            directionalLight.position.set(6, 12, 8); // Adjusted angle
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 1024;
+            directionalLight.shadow.mapSize.height = 1024;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 50;
+            // Make shadow softer
+            directionalLight.shadow.bias = -0.0005;
+            scene.add(directionalLight);
+            const hemiLight = new THREE.HemisphereLight( 0xffffff, 0x555555, 0.5 ); // Slightly stronger ground color
+            hemiLight.position.set( 0, 20, 0 );
+            scene.add( hemiLight );
+
+            // 5. Controls Setup
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false;
+            controls.minDistance = 3;
+            controls.maxDistance = 40;
+            controls.maxPolarAngle = Math.PI / 1.5;
+            controls.target.set(0, 0, 0);
+            controls.update();
+
+            // 6. Create Mezuzah Groups
+            mezuzahGroup = new THREE.Group();
+            elementsGroup = new THREE.Group();
+            shinGroup = new THREE.Group();
+            mezuzahGroup.add(elementsGroup);
+            mezuzahGroup.add(shinGroup);
+            scene.add(mezuzahGroup);
+
+            wheatGroup = new THREE.Group(); elementsGroup.add(wheatGroup);
+            leafGroup = new THREE.Group(); elementsGroup.add(leafGroup);
+            pebblesGroup = new THREE.Group(); elementsGroup.add(pebblesGroup);
+            sandGroup = new THREE.Group(); elementsGroup.add(sandGroup);
+
+            // 7. Create Mezuzah Body (Using params for material)
+            const geometry = new RoundedBoxGeometry(mezuzahWidth, mezuzahHeight, mezuzahDepth, mezuzahSegments, mezuzahRadius);
+            const material = new THREE.MeshPhysicalMaterial({
+                color: params.epoxyColor,
+                metalness: 0.05, // Very low metalness
+                roughness: params.epoxyRoughness,
+                transmission: 1.0, // Full transmission, thickness controls absorption
+                thickness: 1.0,    // Adjust thickness for clarity/absorption effect
+                ior: params.epoxyIOR,
+                transparent: true,
+                opacity: params.epoxyOpacity,
+                side: THREE.DoubleSide,
+                // attenuationColor: 0xffffff, // Color light takes on as it passes through (white = no tint)
+                // attenuationDistance: Infinity // How far light travels before being fully attenuated
+            });
+            mezuzahMesh = new THREE.Mesh(geometry, material);
+            mezuzahMesh.castShadow = true; // Body casts subtle shadow
+            mezuzahMesh.receiveShadow = true; // Body can receive shadows (e.g., on back faces)
+            mezuzahGroup.add(mezuzahMesh);
+
+            // 8. Create Shin Letter
+            createShinLetter(mezuzahWidth, mezuzahHeight, mezuzahDepth, mezuzahRadius);
+
+            // 9. Create Initial Embedded Elements
+            updateAllElements();
+
+            // 10. Add Ground Plane
+            const planeGeometry = new THREE.PlaneGeometry(50, 50);
+            const planeMaterial = new THREE.MeshStandardMaterial({ color: 0xcccccc, side: THREE.DoubleSide, roughness: 0.8 });
+            const plane = new THREE.Mesh(planeGeometry, planeMaterial);
+            plane.rotation.x = -Math.PI / 2;
+            plane.position.y = -mezuzahHeight / 2 - 0.1;
+            plane.receiveShadow = true;
+            scene.add(plane);
+
+            // 11. Setup GUI Controls
+            setupGUI();
+
+            // 12. Handle Window Resize
+            window.addEventListener('resize', onWindowResize, false);
+
+            // 13. Start Animation Loop
+            animate();
+        }
+
+        // --- Preload Textures ---
+        function preloadTextures() {
+            textureLoader.load(textures.wheat, (tex) => loadedTextures.wheat = tex);
+            textureLoader.load(textures.leaf, (tex) => loadedTextures.leaf = tex);
+            // No pebble texture needed now
+            loadedTextures.sand_colors = [];
+            textures.sand_colors.forEach(url => {
+                textureLoader.load(url, (tex) => loadedTextures.sand_colors.push(tex));
+            });
+            console.log("Preloading textures...");
+        }
+
+        // --- Function to Setup GUI ---
+        function setupGUI() {
+            gui = new GUI();
+            gui.title("Mezuzah Controls");
+
+            // --- General & Epoxy Controls ---
+            const generalFolder = gui.addFolder('General & Epoxy');
+            generalFolder.addColor(params, 'epoxyColor').name('Epoxy Color')
+                .onChange((value) => { mezuzahMesh.material.color.set(value); });
+            generalFolder.add(params, 'epoxyOpacity', 0.1, 1.0, 0.01).name('Epoxy Opacity')
+                .onChange((value) => { mezuzahMesh.material.opacity = value; });
+            generalFolder.add(params, 'epoxyRoughness', 0.0, 0.5, 0.01).name('Epoxy Roughness')
+                 .onChange((value) => { mezuzahMesh.material.roughness = value; });
+             generalFolder.add(params, 'epoxyIOR', 1.0, 2.33, 0.01).name('Epoxy IOR')
+                 .onChange((value) => { mezuzahMesh.material.ior = value; });
+            generalFolder.addColor(params, 'shinColor').name('Shin Color')
+                .onChange((value) => { if (shinMaterial) shinMaterial.color.set(value); });
+            generalFolder.open(); // Open by default
+
+            // --- Wheat Controls ---
+            const wheatFolder = gui.addFolder('Wheat Stalk');
+            wheatFolder.add(params, 'wheatVisible').name('Visible').onChange(updateAllElements);
+            wheatFolder.add(params, 'wheatSize', 0.5, 5.0, 0.1).name('Size').onChange(updateAllElements);
+            wheatFolder.add(params, 'wheatPosX', -mezuzahWidth/2, mezuzahWidth/2, 0.05).name('Position X').onChange(updateAllElements);
+            wheatFolder.add(params, 'wheatPosY', -mezuzahHeight/2, mezuzahHeight/2, 0.1).name('Position Y').onChange(updateAllElements);
+            wheatFolder.add(params, 'wheatPosZ', -mezuzahDepth/2, mezuzahDepth/2, 0.05).name('Position Z').onChange(updateAllElements);
+
+            // --- Leaf Controls ---
+            const leafFolder = gui.addFolder('Leaf');
+            leafFolder.add(params, 'leafVisible').name('Visible').onChange(updateAllElements);
+            leafFolder.add(params, 'leafSize', 0.5, 3.0, 0.1).name('Size').onChange(updateAllElements);
+            leafFolder.add(params, 'leafPosX', -mezuzahWidth/2, mezuzahWidth/2, 0.05).name('Position X').onChange(updateAllElements);
+            leafFolder.add(params, 'leafPosY', -mezuzahHeight/2, mezuzahHeight/2, 0.1).name('Position Y').onChange(updateAllElements);
+            leafFolder.add(params, 'leafPosZ', -mezuzahDepth/2, mezuzahDepth/2, 0.05).name('Position Z').onChange(updateAllElements);
+
+            // --- Pebble Controls ---
+            const pebbleFolder = gui.addFolder('Pebbles');
+            pebbleFolder.add(params, 'pebbleVisible').name('Visible').onChange(updateAllElements);
+            pebbleFolder.add(params, 'pebbleCount', 0, 100, 1).name('Count').onChange(updateAllElements);
+            pebbleFolder.add(params, 'pebbleBaseSize', 0.05, 0.3, 0.01).name('Base Size').onChange(updateAllElements);
+            pebbleFolder.add(params, 'pebbleSizeVariation', 0.0, 1.0, 0.05).name('Size Variation').onChange(updateAllElements);
+            pebbleFolder.addColor(params, 'pebbleColor').name('Color').onChange(updateAllElements); // Update color live
+            pebbleFolder.add(params, 'pebbleRoughness', 0.0, 1.0, 0.05).name('Roughness').onChange(updateAllElements);
+            pebbleFolder.add(params, 'pebbleSpread', 0.1, 1.0, 0.05).name('Spread').onChange(updateAllElements);
+
+            // --- Sand Controls ---
+            const sandFolder = gui.addFolder('Colorful Sand');
+            sandFolder.add(params, 'sandVisible').name('Visible').onChange(updateAllElements);
+            sandFolder.add(params, 'sandCount', 0, 500, 5).name('Count').onChange(updateAllElements);
+            sandFolder.add(params, 'sandGrainSize', 0.01, 0.1, 0.005).name('Grain Size').onChange(updateAllElements);
+             sandFolder.add(params, 'sandRoughness', 0.0, 1.0, 0.05).name('Roughness').onChange(updateAllElements);
+            sandFolder.add(params, 'sandSpread', 0.1, 1.0, 0.05).name('Spread').onChange(updateAllElements);
+        }
+
+        // --- Function to Clear a Specific Group ---
+        function clearGroup(group) {
+            // Dispose geometry and material associated with children
+            group.traverse(child => {
+                if (child instanceof THREE.Mesh) {
+                    if (child.geometry) {
+                        child.geometry.dispose();
+                    }
+                    // Dispose material only if it's not shared or if we are sure it's no longer needed
+                    // In this case, pebble/sand materials are recreated, so safe to dispose
+                     if (child.material) {
+                        // Don't dispose textures here as they are preloaded and reused
+                        // if (child.material.map) child.material.map.dispose();
+                        child.material.dispose();
+                    }
+                }
+            });
+            // Remove all children from the group
+            while (group.children.length > 0) {
+                group.remove(group.children[0]);
+            }
+        }
+
+
+        // --- Function to Update All Embedded Elements ---
+        function updateAllElements() {
+            clearGroup(wheatGroup);
+            clearGroup(leafGroup);
+            clearGroup(pebblesGroup);
+            clearGroup(sandGroup);
+
+            const innerWidth = mezuzahWidth - mezuzahRadius * 2 - elementPadding * 2;
+            const innerHeight = mezuzahHeight - mezuzahRadius * 2 - elementPadding * 2;
+            const innerDepth = mezuzahDepth - mezuzahRadius * 2 - elementPadding * 2;
+
+            // --- Create Wheat --- (Still using PlaneGeometry)
+            if (params.wheatVisible && loadedTextures.wheat) {
+                const texture = loadedTextures.wheat;
+                const aspectRatio = texture.image ? texture.image.width / texture.image.height : (64 / 200);
+                const baseHeight = 1.0;
+                const planeHeight = baseHeight * params.wheatSize;
+                const planeWidth = planeHeight * aspectRatio;
+                const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
+                const material = new THREE.MeshStandardMaterial({
+                    map: texture, transparent: true, side: THREE.DoubleSide, alphaTest: 0.2, // Increased alphaTest slightly
+                    roughness: 0.7, metalness: 0.1 // Slightly rougher
+                });
+                const wheat = new THREE.Mesh(geometry, material);
+                wheat.position.set(params.wheatPosX, params.wheatPosY, params.wheatPosZ);
+                wheat.position.x = THREE.MathUtils.clamp(wheat.position.x, -innerWidth / 2, innerWidth / 2);
+                wheat.position.y = THREE.MathUtils.clamp(wheat.position.y, -innerHeight / 2, innerHeight / 2);
+                wheat.position.z = THREE.MathUtils.clamp(wheat.position.z, -innerDepth / 2, innerDepth / 2);
+                wheat.castShadow = true;
+                wheatGroup.add(wheat);
+            }
+
+            // --- Create Leaf --- (Still using PlaneGeometry)
+            if (params.leafVisible && loadedTextures.leaf) {
+                const texture = loadedTextures.leaf;
+                const aspectRatio = texture.image ? texture.image.width / texture.image.height : (100 / 80);
+                const baseWidth = 0.8;
+                const planeWidth = baseWidth * params.leafSize;
+                const planeHeight = planeWidth / aspectRatio;
+                const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
+                const material = new THREE.MeshStandardMaterial({
+                    map: texture, transparent: true, side: THREE.DoubleSide, alphaTest: 0.2,
+                    roughness: 0.6, metalness: 0.05 // Less metallic
+                });
+                const leaf = new THREE.Mesh(geometry, material);
+                leaf.position.set(params.leafPosX, params.leafPosY, params.leafPosZ);
+                leaf.position.x = THREE.MathUtils.clamp(leaf.position.x, -innerWidth / 2, innerWidth / 2);
+                leaf.position.y = THREE.MathUtils.clamp(leaf.position.y, -innerHeight / 2, innerHeight / 2);
+                leaf.position.z = THREE.MathUtils.clamp(leaf.position.z, -innerDepth / 2, innerDepth / 2);
+                leaf.rotation.z = Math.PI / 8;
+                leaf.castShadow = true;
+                leafGroup.add(leaf);
+            }
+
+            // --- Create Pebbles --- (Using SphereGeometry)
+            if (params.pebbleVisible && params.pebbleCount > 0) {
+                // Create one material for all pebbles
+                const material = new THREE.MeshStandardMaterial({
+                    color: params.pebbleColor,
+                    roughness: params.pebbleRoughness,
+                    metalness: 0.1 // Pebbles aren't metallic
+                });
+                // Create one base geometry, scale instances later
+                const baseGeometry = new THREE.SphereGeometry(1, 12, 8); // Radius 1, low poly for performance
+
+                const spreadFactor = params.pebbleSpread;
+                for (let i = 0; i < params.pebbleCount; i++) {
+                    const pebble = new THREE.Mesh(baseGeometry, material); // Use same geometry & material
+
+                    // Random size based on base size and variation
+                    const sizeMultiplier = 1 + (Math.random() - 0.5) * 2 * params.pebbleSizeVariation; // Random factor around 1
+                    const pebbleRadius = params.pebbleBaseSize * sizeMultiplier;
+                    pebble.scale.set(pebbleRadius, pebbleRadius, pebbleRadius); // Scale the instance
+
+                    // Random position within the spread area, ensuring radius fits
+                    const posSpreadW = Math.max(0, innerWidth * spreadFactor - pebbleRadius * 2);
+                    const posSpreadH = Math.max(0, innerHeight * spreadFactor - pebbleRadius * 2);
+                    const posSpreadD = Math.max(0, innerDepth * spreadFactor - pebbleRadius * 2);
+
+                    pebble.position.x = (Math.random() - 0.5) * posSpreadW;
+                    pebble.position.y = (Math.random() - 0.5) * posSpreadH;
+                    pebble.position.z = (Math.random() - 0.5) * posSpreadD;
+
+                    // Random rotation (less important for spheres but adds subtle variation)
+                    pebble.rotation.x = Math.random() * Math.PI * 2;
+                    pebble.rotation.y = Math.random() * Math.PI * 2;
+                    pebble.rotation.z = Math.random() * Math.PI * 2;
+
+                    pebble.castShadow = true;
+                    pebble.receiveShadow = true; // Pebbles can receive shadows from others
+                    pebblesGroup.add(pebble);
+                }
+            }
+
+
+            // --- Create Sand --- (Using small planes with textures)
+            if (params.sandVisible && loadedTextures.sand_colors?.length > 0 && params.sandCount > 0) {
+                 // Use a very simple geometry for sand grains
+                const geometry = new THREE.PlaneGeometry(params.sandGrainSize, params.sandGrainSize);
+                // Create materials for each sand color once
+                const sandMaterials = loadedTextures.sand_colors.map(texture => new THREE.MeshStandardMaterial({
+                    map: texture,
+                    transparent: false, // Assume sand textures are opaque
+                    side: THREE.DoubleSide,
+                    roughness: params.sandRoughness, // Use param
+                    metalness: 0.05
+                }));
+
+                if (sandMaterials.length === 0) return;
+
+                const spreadFactor = params.sandSpread;
+                for (let i = 0; i < params.sandCount; i++) {
+                    const material = sandMaterials[Math.floor(Math.random() * sandMaterials.length)];
+                    // Clone geometry, reuse materials
+                    const sandGrain = new THREE.Mesh(geometry.clone(), material);
+
+                    sandGrain.position.x = (Math.random() - 0.5) * innerWidth * spreadFactor;
+                    sandGrain.position.y = (Math.random() - 0.5) * innerHeight * spreadFactor;
+                    sandGrain.position.z = (Math.random() - 0.5) * innerDepth * spreadFactor;
+
+                    sandGrain.rotation.x = Math.random() * Math.PI * 2;
+                    sandGrain.rotation.y = Math.random() * Math.PI * 2;
+                    sandGrain.rotation.z = Math.random() * Math.PI * 2;
+
+                    // sandGrain.castShadow = false; // Individual grains casting shadows is expensive
+                    sandGroup.add(sandGrain);
+                }
+                 // Dispose of the cloned geometry template after loop
+                 geometry.dispose();
+            }
+        }
+
+
+        // --- Function to Create Shin Letter ---
+        function createShinLetter(mWidth, mHeight, mDepth, mRadius) {
+            while(shinGroup.children.length > 0) {
+                 const child = shinGroup.children[0];
+                 shinGroup.remove(child);
+                 if (child.geometry) child.geometry.dispose();
+                 // Material is shared, dispose only once if needed, maybe outside this func
+            }
+             // Recreate material if shinColor changes
+            shinMaterial = new THREE.MeshStandardMaterial({ color: params.shinColor, roughness: 0.4, metalness: 0.2 });
+
+            const barWidth = 0.1; const barHeight = 0.6; const barDepth = 0.1;
+            const baseWidth = mWidth * 0.5;
+            const barGeometry = new THREE.BoxGeometry(barWidth, barHeight, barDepth);
+            const baseGeometry = new THREE.BoxGeometry(baseWidth, barWidth, barDepth);
+            const frontOffset = mDepth / 2 + barDepth / 2 + 0.01;
+            const verticalPosition = mHeight * 0.3;
+
+            const bar1 = new THREE.Mesh(barGeometry, shinMaterial);
+            bar1.position.set(-baseWidth / 2 + barWidth / 2, verticalPosition, frontOffset);
+            bar1.rotation.z = Math.PI / 18;
+
+            const bar2 = new THREE.Mesh(barGeometry, shinMaterial);
+            bar2.position.set(0, verticalPosition, frontOffset);
+
+            const bar3 = new THREE.Mesh(barGeometry, shinMaterial);
+            bar3.position.set(baseWidth / 2 - barWidth / 2, verticalPosition, frontOffset);
+            bar3.rotation.z = -Math.PI / 18;
+
+            const base = new THREE.Mesh(baseGeometry, shinMaterial);
+            base.position.set(0, verticalPosition - barHeight / 2 + barWidth / 2, frontOffset);
+
+            bar1.castShadow = true; bar2.castShadow = true; bar3.castShadow = true; base.castShadow = true;
+            // Shin doesn't need to receive shadows typically
+            // bar1.receiveShadow = true; ...
+
+            shinGroup.add(bar1); shinGroup.add(bar2); shinGroup.add(bar3); shinGroup.add(base);
+        }
+
+        // --- Handle Window Resize ---
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // --- Start the application ---
+        window.onload = function() {
+            init();
+        };
+
+    </script>
+
+</body>
+</html>
