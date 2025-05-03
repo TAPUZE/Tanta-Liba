@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D Epoxy Mezuzah Simulator - PNG Elements</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <title>3D Epoxy Mezuzah Simulator - Wheat/Leaf OBJ Fix</title> <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
@@ -42,12 +41,26 @@
              max-height: 90vh; /* Prevent GUI from being too tall */
              overflow-y: auto; /* Allow scrolling if needed */
         }
+         /* Loading indicator styles */
+         #loading-indicator {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 0.8rem;
+            z-index: 102; /* Above info, below GUI potentially */
+            display: none; /* Hidden by default */
+        }
     </style>
 </head>
 <body class="bg-gray-100">
 
     <div id="container"></div>
     <div id="info">Drag mouse to rotate, scroll to zoom</div>
+    <div id="loading-indicator">Loading 3D Models...</div>
 
     <script type="importmap">
         {
@@ -64,6 +77,8 @@
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
         import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+        import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
         import GUI from 'lil-gui';
 
         // --- Module Scope Variables ---
@@ -72,22 +87,31 @@
         let wheatGroup, leafGroup, pebblesGroup, sandGroup; // Sub-groups for elements
         let mezuzahMesh, shinMaterial; // Controlled meshes/materials
         let gui; // GUI instance
-        let textureLoader; // Texture loader instance
+        let textureLoader; // Texture loader instance for pebble/sand
+        let mtlLoader, objLoader; // Loaders for 3D models
+        let loadingManager; // To track loading progress
+        let loadingIndicator; // DOM element for loading message
+
+         // --- Preloaded Models ---
+         const loadedModels = {
+            wheat: null,
+            leaf: null,
+        };
+        let modelsLoaded = false; // Flag to check if initial models are ready
 
         // --- Textures ---
-        // Using local PNG files - Make sure wheat.png, leaf.png, pebble.png exist in the same folder
         const textures = {
-            wheat: './wheat.png', // Local wheat image
-            leaf: './leaf.png',   // Local leaf image
             pebble: './pebble.png', // Local pebble image
-            sand_colors: [ // Using placeholder textures for sand color variation
+            sand_colors: [
                 'https://placehold.co/16x16/FFD700/ccad00?text=.', // Gold
                 'https://placehold.co/16x16/ADD8E6/87ceeb?text=.', // Light Blue
                 'https://placehold.co/16x16/FFA07A/e9967a?text=.', // Light Salmon
                 'https://placehold.co/16x16/F5F5DC/dcdcdc?text=.'  // Beige
             ]
         };
-        const loadedTextures = {}; // Cache for loaded textures
+        const loadedTextures = {
+             sand_colors: []
+        };
 
         // --- Control Parameters ---
         const params = {
@@ -99,21 +123,23 @@
 
             shinColor: 0x444444,
 
-            // Wheat Controls
+            // Wheat Controls (OBJ Model)
             wheatVisible: true,
-            wheatSize: 3.0, // Scaler for the base size
+            wheatScale: 0.1,
             wheatPosX: -0.3, wheatPosY: -2.0, wheatPosZ: 0.0,
+            wheatRotX: 0, wheatRotY: 0, wheatRotZ: 0,
 
-            // Leaf Controls
+            // Leaf Controls (OBJ Model)
             leafVisible: true,
-            leafSize: 1.5, // Scaler for the base size
+            leafScale: 0.15,
             leafPosX: 0.3, leafPosY: 1.0, leafPosZ: 0.1,
+            leafRotX: 0, leafRotY: 0, leafRotZ: Math.PI / 8,
 
             // Pebble Controls - Using PlaneGeometry with PNG texture
             pebbleVisible: true,
             pebbleCount: 25,
-            pebbleSize: 0.25, // Base size for the pebble plane
-            pebbleRoughness: 0.7, // Material roughness for the pebble plane
+            pebbleSize: 0.25,
+            pebbleRoughness: 0.7,
             pebbleSpread: 0.8,
 
             // Sand Controls
@@ -124,7 +150,11 @@
             sandSpread: 0.9,
 
             regenerateElements: function() {
-                updateAllElements();
+                 if (modelsLoaded) {
+                    updateAllElements();
+                } else {
+                    console.warn("Wheat/Leaf models not loaded yet. Cannot regenerate elements.");
+                }
             }
         };
 
@@ -138,16 +168,136 @@
 
         // --- Initialization Function ---
         function init() {
-            // 0. Texture Loader
-            textureLoader = new THREE.TextureLoader();
-            // Add error handling for local file loading
-             textureLoader.onerror = (error) => {
-                console.error("Texture loading error:", error);
-                // Potentially display a user-friendly message on the page
-             };
+            loadingIndicator = document.getElementById('loading-indicator');
+            loadingIndicator.style.display = 'block';
+
+            setupLoaders();
             preloadTextures();
 
-            // 1. Scene Setup
+            preloadModels(['wheat', 'leaf'], () => {
+                console.log("Wheat and Leaf base models loaded successfully!");
+                modelsLoaded = true;
+                loadingIndicator.style.display = 'none';
+                setupScene();
+                setupGUI();
+                animate();
+            });
+        }
+
+        // --- Setup Loaders ---
+        function setupLoaders() {
+             loadingManager = new THREE.LoadingManager(
+                () => { console.log("Loading Manager: All items loaded."); },
+                (url, itemsLoaded, itemsTotal) => {
+                    console.log(`Loading file: ${url}. Loaded ${itemsLoaded} of ${itemsTotal} files.`);
+                    if (loadingIndicator) {
+                         loadingIndicator.textContent = `Loading: ${itemsLoaded} / ${itemsTotal}`;
+                    }
+                },
+                 (url) => { console.error(`Loading Manager: Error loading file: ${url}`); }
+             );
+
+            textureLoader = new THREE.TextureLoader(loadingManager);
+            mtlLoader = new MTLLoader(loadingManager);
+            // *** Set the base path for OBJ loader here ***
+            objLoader = new OBJLoader(loadingManager).setPath('./'); // Set base path for OBJ files
+        }
+
+         // --- Preload Textures (Pebble and Sand) ---
+         function preloadTextures() {
+            const onError = (url) => (err) => {
+                console.error(`Error loading texture: ${url}`, err);
+                // ** Crucially, the alert might block further execution, consider removing or making conditional **
+                // alert(`Failed to load image: ${url}\nMake sure the file exists and you are using a local server.`);
+            };
+
+            textureLoader.load(textures.pebble, (tex) => loadedTextures.pebble = tex, undefined, onError(textures.pebble));
+
+            loadedTextures.sand_colors = [];
+            textures.sand_colors.forEach(url => {
+                textureLoader.load(url, (tex) => loadedTextures.sand_colors.push(tex), undefined, onError(url));
+            });
+            console.log("Preloading pebble and sand textures...");
+        }
+
+        // --- Preload Specified OBJ/MTL Models ---
+        function preloadModels(modelNames, onLoadCallback) {
+            let modelsLoadedCount = 0;
+            const numModelsToLoad = modelNames.length;
+
+            if (numModelsToLoad === 0) {
+                onLoadCallback();
+                return;
+            }
+
+            const checkCompletion = () => {
+                modelsLoadedCount++;
+                 if (loadingIndicator) {
+                     loadingIndicator.textContent = `Loading Models: ${modelsLoadedCount} / ${numModelsToLoad}`;
+                 }
+                if (modelsLoadedCount === numModelsToLoad) {
+                    onLoadCallback();
+                }
+            };
+
+            modelNames.forEach(name => {
+                loadObjModel(name, (loadedObject) => {
+                    if (loadedObject) {
+                        loadedModels[name] = loadedObject;
+                        loadedObject.traverse(child => {
+                            if (child instanceof THREE.Mesh) {
+                                child.castShadow = true;
+                                child.receiveShadow = true;
+                            }
+                        });
+                        console.log(`Preloaded model: ${name}`);
+                    } else {
+                        console.error(`Failed to preload model: ${name}`);
+                    }
+                    checkCompletion();
+                });
+            });
+        }
+
+        // --- Function to Load a Single OBJ/MTL Model ---
+        function loadObjModel(name, callback) {
+             const mtlFileName = `${name}.mtl`; // Just the filename
+             const objFileName = `${name}.obj`; // Just the filename
+             // *** Set base path for MTL loader here ***
+             mtlLoader.setPath('./'); // Set base path for MTL and textures referenced within it
+
+             console.log(`Attempting to load: ${mtlFileName} and ${objFileName}`);
+
+             mtlLoader
+                // .setPath(texturePath) // Path set above now
+                .load(mtlFileName, (materials) => { // Load using only filename
+                    materials.preload();
+                    console.log(`Loaded MTL for ${name}`);
+                    objLoader
+                        .setMaterials(materials)
+                        // .setPath('./') // Path already set during initialization
+                        .load(objFileName, // Load using only filename
+                            (object) => { console.log(`Loaded OBJ for ${name}`); callback(object); },
+                            undefined,
+                            (error) => {
+                                console.error(`Error loading ${objFileName}:`, error);
+                                alert(`Failed to load 3D model: ${name}.obj\nCheck console, ensure files exist, and local server is running.`);
+                                callback(null);
+                            }
+                        );
+                },
+                undefined,
+                (error) => {
+                    console.error(`Error loading ${mtlFileName}:`, error);
+                    alert(`Failed to load material file: ${name}.mtl\nCheck console and ensure file exists.`);
+                    callback(null);
+                }
+            );
+        }
+
+         // --- Setup Scene Elements (Called after models are loaded) ---
+         function setupScene() {
+             // 1. Scene Setup
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0xf0f0f0);
 
@@ -206,13 +356,9 @@
             const geometry = new RoundedBoxGeometry(mezuzahWidth, mezuzahHeight, mezuzahDepth, mezuzahSegments, mezuzahRadius);
             const material = new THREE.MeshPhysicalMaterial({
                 color: params.epoxyColor,
-                metalness: 0.05,
-                roughness: params.epoxyRoughness,
-                transmission: 1.0,
-                thickness: 1.0,
-                ior: params.epoxyIOR,
-                transparent: true,
-                opacity: params.epoxyOpacity,
+                metalness: 0.05, roughness: params.epoxyRoughness,
+                transmission: 1.0, thickness: 1.0, ior: params.epoxyIOR,
+                transparent: true, opacity: params.epoxyOpacity,
                 side: THREE.DoubleSide,
             });
             mezuzahMesh = new THREE.Mesh(geometry, material);
@@ -223,7 +369,7 @@
             // 8. Create Shin Letter
             createShinLetter(mezuzahWidth, mezuzahHeight, mezuzahDepth, mezuzahRadius);
 
-            // 9. Create Initial Embedded Elements
+            // 9. Create Initial Embedded Elements from loaded models/textures
             updateAllElements();
 
             // 10. Add Ground Plane
@@ -234,37 +380,12 @@
             plane.position.y = -mezuzahHeight / 2 - 0.1;
             plane.receiveShadow = true;
             scene.add(plane);
+            planeGeometry.dispose(); // Dispose after use if not needed elsewhere
 
-            // 11. Setup GUI Controls
-            setupGUI();
-
-            // 12. Handle Window Resize
+            // 11. Handle Window Resize
             window.addEventListener('resize', onWindowResize, false);
+         }
 
-            // 13. Start Animation Loop
-            animate();
-        }
-
-        // --- Preload Textures ---
-        function preloadTextures() {
-            const onError = (url) => (err) => {
-                console.error(`Error loading texture: ${url}`, err);
-                // Add fallback logic here if needed, e.g., mark texture as failed
-                // You could add a red box again or just skip the element.
-                 alert(`Failed to load image: ${url}\nMake sure the file exists in the same folder as the HTML.`);
-            };
-
-            textureLoader.load(textures.wheat, (tex) => loadedTextures.wheat = tex, undefined, onError(textures.wheat));
-            textureLoader.load(textures.leaf, (tex) => loadedTextures.leaf = tex, undefined, onError(textures.leaf));
-            textureLoader.load(textures.pebble, (tex) => loadedTextures.pebble = tex, undefined, onError(textures.pebble)); // Load pebble texture
-
-            loadedTextures.sand_colors = [];
-            textures.sand_colors.forEach(url => {
-                // Sand uses placeholders, less likely to fail, but keep error handler
-                textureLoader.load(url, (tex) => loadedTextures.sand_colors.push(tex), undefined, onError(url));
-            });
-            console.log("Preloading textures (wheat, leaf, pebble from local files)...");
-        }
 
         // --- Function to Setup GUI ---
         function setupGUI() {
@@ -273,40 +394,41 @@
 
             // --- General & Epoxy Controls ---
             const generalFolder = gui.addFolder('General & Epoxy');
-            generalFolder.addColor(params, 'epoxyColor').name('Epoxy Color')
-                .onChange((value) => { mezuzahMesh.material.color.set(value); });
-            generalFolder.add(params, 'epoxyOpacity', 0.1, 1.0, 0.01).name('Epoxy Opacity')
-                .onChange((value) => { mezuzahMesh.material.opacity = value; });
-            generalFolder.add(params, 'epoxyRoughness', 0.0, 0.5, 0.01).name('Epoxy Roughness')
-                 .onChange((value) => { mezuzahMesh.material.roughness = value; });
-             generalFolder.add(params, 'epoxyIOR', 1.0, 2.33, 0.01).name('Epoxy IOR')
-                 .onChange((value) => { mezuzahMesh.material.ior = value; });
-            generalFolder.addColor(params, 'shinColor').name('Shin Color')
-                .onChange((value) => { if (shinMaterial) shinMaterial.color.set(value); });
+            generalFolder.addColor(params, 'epoxyColor').name('Epoxy Color').onChange((value) => { mezuzahMesh.material.color.set(value); });
+            generalFolder.add(params, 'epoxyOpacity', 0.1, 1.0, 0.01).name('Epoxy Opacity').onChange((value) => { mezuzahMesh.material.opacity = value; });
+            generalFolder.add(params, 'epoxyRoughness', 0.0, 0.5, 0.01).name('Epoxy Roughness').onChange((value) => { mezuzahMesh.material.roughness = value; });
+            generalFolder.add(params, 'epoxyIOR', 1.0, 2.33, 0.01).name('Epoxy IOR').onChange((value) => { mezuzahMesh.material.ior = value; });
+            generalFolder.addColor(params, 'shinColor').name('Shin Color').onChange((value) => { if (shinMaterial) shinMaterial.color.set(value); });
             generalFolder.open();
 
-            // --- Wheat Controls ---
-            const wheatFolder = gui.addFolder('Wheat Stalk');
+            // --- Wheat Controls (Model) ---
+            const wheatFolder = gui.addFolder('Wheat Stalk (3D)');
             wheatFolder.add(params, 'wheatVisible').name('Visible').onChange(updateAllElements);
-            wheatFolder.add(params, 'wheatSize', 0.5, 5.0, 0.1).name('Size').onChange(updateAllElements);
+            wheatFolder.add(params, 'wheatScale', 0.01, 0.5, 0.005).name('Scale').onChange(updateAllElements);
             wheatFolder.add(params, 'wheatPosX', -mezuzahWidth/2, mezuzahWidth/2, 0.05).name('Position X').onChange(updateAllElements);
             wheatFolder.add(params, 'wheatPosY', -mezuzahHeight/2, mezuzahHeight/2, 0.1).name('Position Y').onChange(updateAllElements);
             wheatFolder.add(params, 'wheatPosZ', -mezuzahDepth/2, mezuzahDepth/2, 0.05).name('Position Z').onChange(updateAllElements);
+            wheatFolder.add(params, 'wheatRotX', -Math.PI, Math.PI, 0.1).name('Rotate X').onChange(updateAllElements);
+            wheatFolder.add(params, 'wheatRotY', -Math.PI, Math.PI, 0.1).name('Rotate Y').onChange(updateAllElements);
+            wheatFolder.add(params, 'wheatRotZ', -Math.PI, Math.PI, 0.1).name('Rotate Z').onChange(updateAllElements);
 
-            // --- Leaf Controls ---
-            const leafFolder = gui.addFolder('Leaf');
+
+            // --- Leaf Controls (Model) ---
+            const leafFolder = gui.addFolder('Leaf (3D)');
             leafFolder.add(params, 'leafVisible').name('Visible').onChange(updateAllElements);
-            leafFolder.add(params, 'leafSize', 0.5, 3.0, 0.1).name('Size').onChange(updateAllElements);
+            leafFolder.add(params, 'leafScale', 0.01, 0.5, 0.005).name('Scale').onChange(updateAllElements);
             leafFolder.add(params, 'leafPosX', -mezuzahWidth/2, mezuzahWidth/2, 0.05).name('Position X').onChange(updateAllElements);
             leafFolder.add(params, 'leafPosY', -mezuzahHeight/2, mezuzahHeight/2, 0.1).name('Position Y').onChange(updateAllElements);
             leafFolder.add(params, 'leafPosZ', -mezuzahDepth/2, mezuzahDepth/2, 0.05).name('Position Z').onChange(updateAllElements);
+            leafFolder.add(params, 'leafRotX', -Math.PI, Math.PI, 0.1).name('Rotate X').onChange(updateAllElements);
+            leafFolder.add(params, 'leafRotY', -Math.PI, Math.PI, 0.1).name('Rotate Y').onChange(updateAllElements);
+            leafFolder.add(params, 'leafRotZ', -Math.PI, Math.PI, 0.1).name('Rotate Z').onChange(updateAllElements);
 
             // --- Pebble Controls (Using PNG Texture) ---
-            const pebbleFolder = gui.addFolder('Pebbles');
+            const pebbleFolder = gui.addFolder('Pebbles (Image)');
             pebbleFolder.add(params, 'pebbleVisible').name('Visible').onChange(updateAllElements);
             pebbleFolder.add(params, 'pebbleCount', 0, 100, 1).name('Count').onChange(updateAllElements);
-            pebbleFolder.add(params, 'pebbleSize', 0.05, 0.5, 0.01).name('Size').onChange(updateAllElements); // Size of the plane
-            // Removed pebbleColor and sizeVariation controls
+            pebbleFolder.add(params, 'pebbleSize', 0.05, 0.5, 0.01).name('Size').onChange(updateAllElements);
             pebbleFolder.add(params, 'pebbleRoughness', 0.0, 1.0, 0.05).name('Roughness').onChange(updateAllElements);
             pebbleFolder.add(params, 'pebbleSpread', 0.1, 1.0, 0.05).name('Spread').onChange(updateAllElements);
 
@@ -319,20 +441,42 @@
             sandFolder.add(params, 'sandSpread', 0.1, 1.0, 0.05).name('Spread').onChange(updateAllElements);
         }
 
-        // --- Function to Clear a Specific Group ---
+        // --- Function to Clear a Specific Group and Dispose Contents ---
         function clearGroup(group) {
-            group.traverse(child => {
+            // Dispose of resources used by the group's children
+             group.traverse(child => {
                 if (child instanceof THREE.Mesh) {
-                    if (child.geometry) child.geometry.dispose();
-                    if (child.material) {
-                        // Only dispose map if it's unique per object, otherwise textures might be disposed prematurely
-                        // if (child.material.map && !Object.values(loadedTextures).includes(child.material.map) && !loadedTextures.sand_colors.includes(child.material.map)) {
-                        //    child.material.map.dispose();
-                        // }
+                    if (child.geometry) {
+                        child.geometry.dispose(); // Dispose geometry
+                    }
+                    // Dispose material(s)
+                    if (Array.isArray(child.material)) {
+                        child.material.forEach(material => {
+                            // Dispose textures attached to the material
+                            if (material.map) material.map.dispose();
+                            if (material.lightMap) material.lightMap.dispose();
+                            if (material.bumpMap) material.bumpMap.dispose();
+                            if (material.normalMap) material.normalMap.dispose();
+                            if (material.specularMap) material.specularMap.dispose();
+                            if (material.envMap) material.envMap.dispose();
+                            // Dispose the material itself
+                            material.dispose();
+                        });
+                    } else if (child.material) {
+                         // Dispose textures attached to the material
+                        if (child.material.map) child.material.map.dispose();
+                        if (child.material.lightMap) child.material.lightMap.dispose();
+                        if (child.material.bumpMap) child.material.bumpMap.dispose();
+                        if (child.material.normalMap) child.material.normalMap.dispose();
+                        if (child.material.specularMap) child.material.specularMap.dispose();
+                        if (child.material.envMap) child.material.envMap.dispose();
+                        // Dispose the material itself
                         child.material.dispose();
                     }
                 }
             });
+
+            // Remove children from the group
             while (group.children.length > 0) {
                 group.remove(group.children[0]);
             }
@@ -346,70 +490,57 @@
             clearGroup(pebblesGroup);
             clearGroup(sandGroup);
 
+             if ((params.wheatVisible && !loadedModels.wheat) || (params.leafVisible && !loadedModels.leaf)) {
+                 console.warn("Required 3D models (wheat/leaf) are not loaded yet. Skipping element creation.");
+                 return;
+             }
+              if (params.pebbleVisible && !loadedTextures.pebble) {
+                  console.warn("Required pebble texture not loaded yet. Skipping pebble creation.");
+                  // Decide whether to stop all updates or just skip pebbles
+                  // return; // Uncomment to stop all updates if pebble texture fails
+              }
+
+
             const innerWidth = mezuzahWidth - mezuzahRadius * 2 - elementPadding * 2;
             const innerHeight = mezuzahHeight - mezuzahRadius * 2 - elementPadding * 2;
             const innerDepth = mezuzahDepth - mezuzahRadius * 2 - elementPadding * 2;
 
-            // --- Create Wheat --- (Using PlaneGeometry with wheat.png)
-            if (params.wheatVisible && loadedTextures.wheat) {
-                const texture = loadedTextures.wheat;
-                // Use texture dimensions for aspect ratio if available
-                const aspectRatio = texture.image ? texture.image.width / texture.image.height : 1; // Default aspect ratio
-                const baseHeight = 1.0;
-                const planeHeight = baseHeight * params.wheatSize;
-                const planeWidth = planeHeight * aspectRatio;
-                const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
-                const material = new THREE.MeshStandardMaterial({
-                    map: texture, transparent: true, side: THREE.DoubleSide, alphaTest: 0.1, // alphaTest helps with PNG transparency edges
-                    roughness: 0.7, metalness: 0.1
-                });
-                const wheat = new THREE.Mesh(geometry, material);
+            // --- Create Wheat --- (Cloning preloaded OBJ model)
+            if (params.wheatVisible && loadedModels.wheat) {
+                const wheat = loadedModels.wheat.clone();
+                wheat.scale.setScalar(params.wheatScale);
                 wheat.position.set(params.wheatPosX, params.wheatPosY, params.wheatPosZ);
+                wheat.rotation.set(params.wheatRotX, params.wheatRotY, params.wheatRotZ);
                 wheat.position.x = THREE.MathUtils.clamp(wheat.position.x, -innerWidth / 2, innerWidth / 2);
                 wheat.position.y = THREE.MathUtils.clamp(wheat.position.y, -innerHeight / 2, innerHeight / 2);
                 wheat.position.z = THREE.MathUtils.clamp(wheat.position.z, -innerDepth / 2, innerDepth / 2);
-                wheat.castShadow = true;
                 wheatGroup.add(wheat);
-            } else if (params.wheatVisible) {
-                 console.warn("Wheat texture not loaded, cannot create wheat element.");
             }
 
-            // --- Create Leaf --- (Using PlaneGeometry with leaf.png)
-            if (params.leafVisible && loadedTextures.leaf) {
-                const texture = loadedTextures.leaf;
-                const aspectRatio = texture.image ? texture.image.width / texture.image.height : 1;
-                const baseWidth = 0.8;
-                const planeWidth = baseWidth * params.leafSize;
-                const planeHeight = planeWidth / aspectRatio;
-                const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
-                const material = new THREE.MeshStandardMaterial({
-                    map: texture, transparent: true, side: THREE.DoubleSide, alphaTest: 0.1,
-                    roughness: 0.6, metalness: 0.05
-                });
-                const leaf = new THREE.Mesh(geometry, material);
+            // --- Create Leaf --- (Cloning preloaded OBJ model)
+            if (params.leafVisible && loadedModels.leaf) {
+                const leaf = loadedModels.leaf.clone();
+                leaf.scale.setScalar(params.leafScale);
                 leaf.position.set(params.leafPosX, params.leafPosY, params.leafPosZ);
+                leaf.rotation.set(params.leafRotX, params.leafRotY, params.leafRotZ);
                 leaf.position.x = THREE.MathUtils.clamp(leaf.position.x, -innerWidth / 2, innerWidth / 2);
                 leaf.position.y = THREE.MathUtils.clamp(leaf.position.y, -innerHeight / 2, innerHeight / 2);
                 leaf.position.z = THREE.MathUtils.clamp(leaf.position.z, -innerDepth / 2, innerDepth / 2);
-                leaf.rotation.z = Math.PI / 8;
-                leaf.castShadow = true;
                 leafGroup.add(leaf);
-             } else if (params.leafVisible) {
-                 console.warn("Leaf texture not loaded, cannot create leaf element.");
             }
 
             // --- Create Pebbles --- (Using PlaneGeometry with pebble.png)
             if (params.pebbleVisible && loadedTextures.pebble && params.pebbleCount > 0) {
                 const texture = loadedTextures.pebble;
-                // Use texture aspect ratio if available, otherwise assume square
                  const aspectRatio = texture.image ? texture.image.width / texture.image.height : 1;
                  const planeWidth = aspectRatio >= 1 ? params.pebbleSize * aspectRatio : params.pebbleSize;
                  const planeHeight = aspectRatio < 1 ? params.pebbleSize / aspectRatio : params.pebbleSize;
 
+                // Create geometry and material once for efficiency
                 const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
                 const material = new THREE.MeshStandardMaterial({
                     map: texture,
-                    transparent: true, // Assume pebble.png has transparency
+                    transparent: true,
                     side: THREE.DoubleSide,
                     alphaTest: 0.1,
                     roughness: params.pebbleRoughness,
@@ -418,33 +549,30 @@
 
                 const spreadFactor = params.pebbleSpread;
                 for (let i = 0; i < params.pebbleCount; i++) {
-                    // Clone geometry, reuse material
-                    const pebble = new THREE.Mesh(geometry.clone(), material);
+                    // Clone only the mesh, reusing geometry and material
+                    const pebble = new THREE.Mesh(geometry, material); // Reuse geometry and material
 
-                    // Random position within the spread area
                     pebble.position.x = (Math.random() - 0.5) * innerWidth * spreadFactor;
                     pebble.position.y = (Math.random() - 0.5) * innerHeight * spreadFactor;
                     pebble.position.z = (Math.random() - 0.5) * innerDepth * spreadFactor;
 
-                    // Random rotation
                     pebble.rotation.x = Math.random() * Math.PI * 2;
                     pebble.rotation.y = Math.random() * Math.PI * 2;
                     pebble.rotation.z = Math.random() * Math.PI * 2;
 
                     pebble.castShadow = true;
-                    // pebble.receiveShadow = true; // Less important for flat planes inside
                     pebblesGroup.add(pebble);
                 }
-                 // Dispose of the template geometry
+                 // Dispose of the template geometry *after* the loop
                  geometry.dispose();
-             } else if (params.pebbleVisible) {
-                 console.warn("Pebble texture not loaded, cannot create pebble elements.");
+                 // Material is reused, don't dispose here unless it's the very end of the app
             }
 
 
-            // --- Create Sand --- (Remains the same, using placeholder textures)
+            // --- Create Sand --- (Using placeholder textures)
             if (params.sandVisible && loadedTextures.sand_colors?.length > 0 && params.sandCount > 0) {
                 const geometry = new THREE.PlaneGeometry(params.sandGrainSize, params.sandGrainSize);
+                // Create materials only once
                 const sandMaterials = loadedTextures.sand_colors.map(texture => new THREE.MeshStandardMaterial({
                     map: texture,
                     transparent: false, side: THREE.DoubleSide,
@@ -452,12 +580,16 @@
                     metalness: 0.05
                 }));
 
-                if (sandMaterials.length === 0) return;
+                if (sandMaterials.length === 0) {
+                    geometry.dispose();
+                    return;
+                }
 
                 const spreadFactor = params.sandSpread;
                 for (let i = 0; i < params.sandCount; i++) {
                     const material = sandMaterials[Math.floor(Math.random() * sandMaterials.length)];
-                    const sandGrain = new THREE.Mesh(geometry.clone(), material);
+                    // Reuse geometry, pick material
+                    const sandGrain = new THREE.Mesh(geometry, material); // Reuse geometry
 
                     sandGrain.position.x = (Math.random() - 0.5) * innerWidth * spreadFactor;
                     sandGrain.position.y = (Math.random() - 0.5) * innerHeight * spreadFactor;
@@ -469,27 +601,26 @@
 
                     sandGroup.add(sandGrain);
                 }
+                 // Dispose of the template geometry *after* the loop
                  geometry.dispose();
+                 // Materials are reused, don't dispose here
             }
         }
 
 
         // --- Function to Create Shin Letter ---
         function createShinLetter(mWidth, mHeight, mDepth, mRadius) {
-             // Clear previous shin before recreating
-            clearGroup(shinGroup); // Use clearGroup to handle disposal
+            clearGroup(shinGroup);
 
             shinMaterial = new THREE.MeshStandardMaterial({ color: params.shinColor, roughness: 0.4, metalness: 0.2 });
 
             const barWidth = 0.1; const barHeight = 0.6; const barDepth = 0.1;
             const baseWidth = mWidth * 0.5;
-            // Create geometries once
             const barGeometry = new THREE.BoxGeometry(barWidth, barHeight, barDepth);
             const baseGeometry = new THREE.BoxGeometry(baseWidth, barWidth, barDepth);
             const frontOffset = mDepth / 2 + barDepth / 2 + 0.01;
             const verticalPosition = mHeight * 0.3;
 
-            // Create meshes reusing geometries and material
             const bar1 = new THREE.Mesh(barGeometry, shinMaterial);
             bar1.position.set(-baseWidth / 2 + barWidth / 2, verticalPosition, frontOffset);
             bar1.rotation.z = Math.PI / 18;
@@ -507,10 +638,15 @@
             bar1.castShadow = true; bar2.castShadow = true; bar3.castShadow = true; base.castShadow = true;
 
             shinGroup.add(bar1); shinGroup.add(bar2); shinGroup.add(bar3); shinGroup.add(base);
+
+            // Dispose geometries after creating meshes if they won't be reused
+            barGeometry.dispose();
+            baseGeometry.dispose();
         }
 
         // --- Handle Window Resize ---
         function onWindowResize() {
+             if(!camera || !renderer) return;
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -519,24 +655,21 @@
         // --- Animation Loop ---
         function animate() {
             requestAnimationFrame(animate);
-            controls.update();
-            renderer.render(scene, camera);
+             if (controls) controls.update();
+             if (renderer && scene && camera) renderer.render(scene, camera);
         }
 
         // --- Start the application ---
         window.onload = function() {
-            // Quick check if running locally without a server
             if (window.location.protocol === 'file:') {
-                console.warn("Running from local 'file://' protocol. Loading local textures might be blocked by browser security settings. Consider using a simple local web server.");
-                // Optionally display a message to the user in the #info div
-                const infoDiv = document.getElementById('info');
-                if(infoDiv) {
-                    const warning = document.createElement('p');
-                    warning.textContent = 'Warning: Local images might not load due to browser security. Use a local server.';
-                    warning.style.color = 'yellow';
-                    warning.style.marginTop = '5px';
-                    infoDiv.appendChild(warning);
-                }
+                console.error("CRITICAL: Loading 3D models (OBJ/MTL) and textures from 'file://' protocol is blocked by browser security. You MUST use a local web server.");
+                 alert("Error: Cannot load external files from local file system. Please use a local web server.");
+                 const infoDiv = document.getElementById('info');
+                 if(infoDiv) {
+                    infoDiv.innerHTML = '<p style="color: red; font-weight: bold;">Error: Cannot load files. Please run using a local web server.</p>';
+                 }
+                 if(loadingIndicator) loadingIndicator.style.display = 'none';
+                 return;
             }
             init();
         };
