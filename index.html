@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D Epoxy Mezuzah Simulator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            overflow: hidden; /* Prevent scrollbars */
+            background-color: #f0f0f0; /* Light gray background */
+        }
+        #container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+        canvas {
+            display: block; /* Prevent extra space below canvas */
+        }
+        /* Info box styling */
+        #info {
+            position: absolute;
+            bottom: 10px; /* Move info box to bottom */
+            left: 10px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            z-index: 100;
+        }
+        /* Ensure lil-gui is visible */
+        .lil-gui {
+             z-index: 101 !important; /* Make sure GUI is on top */
+             font-size: 14px; /* Adjust font size if needed */
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+
+    <div id="container"></div>
+    <div id="info">Drag mouse to rotate, scroll to zoom</div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/",
+                "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.19.1/dist/lil-gui.esm.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        // Import necessary modules
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'; // Import RoundedBoxGeometry
+        import GUI from 'lil-gui'; // Import lil-gui
+
+        // --- Module Scope Variables ---
+        let scene, camera, renderer, controls;
+        let mezuzahGroup, elementsGroup, shinGroup; // Groups for organization
+        let mezuzahMesh, shinMaterial; // Meshes/Materials to be controlled
+        let gui; // GUI instance
+        let textureLoader; // Texture loader instance
+
+        // --- Control Parameters ---
+        const params = {
+            epoxyColor: 0xeeeeff, // Initial epoxy color
+            shinColor: 0x444444,  // Initial Shin color
+            elementCount: 15,     // Initial number of elements (adjust as needed for images)
+            // --- Use relative paths for local PNG files ---
+            // --- Make sure files named pebble.png, wheat.png, leaf.png exist in the same folder as the HTML ---
+            elementImageUrls: [
+                './pebble.png',  // Path for local Pebble PNG
+                './wheat.png',   // Path for local Wheat PNG
+                './leaf.png'     // Path for local Leaf PNG
+                // Add more relative paths if you have other specific images
+            ],
+            regenerateElements: function() { // Function to trigger regeneration
+                clearElements();
+                createEmbeddedElements(params.elementCount, params.elementImageUrls, mezuzahWidth, mezuzahHeight, mezuzahDepth);
+            }
+        };
+
+        // --- Constants ---
+        const mezuzahHeight = 10;
+        const mezuzahWidth = 1.5;
+        const mezuzahDepth = 1;
+        const mezuzahRadius = Math.min(mezuzahWidth, mezuzahDepth) / 2 * 0.9; // Radius for rounding
+        const mezuzahSegments = 5; // Segments for the rounding smoothness
+
+        // --- Initialization Function ---
+        function init() {
+            // 0. Texture Loader
+            textureLoader = new THREE.TextureLoader();
+
+            // 1. Scene Setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f0f0);
+
+            // 2. Camera Setup
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 5, 15);
+
+            // 3. Renderer Setup
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            // 4. Lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+            scene.add(ambientLight);
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 1.5);
+            directionalLight.position.set(5, 10, 7.5);
+            directionalLight.castShadow = true;
+            directionalLight.shadow.mapSize.width = 1024;
+            directionalLight.shadow.mapSize.height = 1024;
+            directionalLight.shadow.camera.near = 0.5;
+            directionalLight.shadow.camera.far = 50;
+            scene.add(directionalLight);
+            const hemiLight = new THREE.HemisphereLight( 0xffffff, 0x444444, 0.4 );
+            hemiLight.position.set( 0, 20, 0 );
+            scene.add( hemiLight );
+
+            // 5. Controls Setup
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.screenSpacePanning = false;
+            controls.minDistance = 3;
+            controls.maxDistance = 40;
+            controls.maxPolarAngle = Math.PI / 1.5;
+            controls.target.set(0, 0, 0);
+            controls.update();
+
+            // 6. Create Mezuzah Groups
+            mezuzahGroup = new THREE.Group();
+            elementsGroup = new THREE.Group();
+            shinGroup = new THREE.Group();
+            mezuzahGroup.add(elementsGroup);
+            mezuzahGroup.add(shinGroup);
+            scene.add(mezuzahGroup);
+
+            // 7. Create Mezuzah Body (Rounded Epoxy Simulation)
+            const geometry = new RoundedBoxGeometry(mezuzahWidth, mezuzahHeight, mezuzahDepth, mezuzahSegments, mezuzahRadius);
+            const material = new THREE.MeshPhysicalMaterial({
+                color: params.epoxyColor,
+                metalness: 0.1,
+                roughness: 0.1,
+                transmission: 0.9,
+                thickness: 1.5,
+                ior: 1.5,
+                transparent: true,
+                opacity: 0.9,
+                side: THREE.DoubleSide,
+            });
+            mezuzahMesh = new THREE.Mesh(geometry, material);
+            mezuzahMesh.castShadow = true;
+            mezuzahMesh.receiveShadow = true;
+            mezuzahGroup.add(mezuzahMesh);
+
+            // 8. Create Embedded Natural Elements (Initial call using local PNG paths)
+            createEmbeddedElements(params.elementCount, params.elementImageUrls, mezuzahWidth, mezuzahHeight, mezuzahDepth);
+
+            // 9. Create Shin Letter
+            createShinLetter(mezuzahWidth, mezuzahHeight, mezuzahDepth, mezuzahRadius);
+
+            // 10. Add Ground Plane
+            const planeGeometry = new THREE.PlaneGeometry(50, 50);
+            const planeMaterial = new THREE.MeshStandardMaterial({ color: 0xcccccc, side: THREE.DoubleSide });
+            const plane = new THREE.Mesh(planeGeometry, planeMaterial);
+            plane.rotation.x = -Math.PI / 2;
+            plane.position.y = -mezuzahHeight / 2 - 1;
+            plane.receiveShadow = true;
+            scene.add(plane);
+
+            // 11. Setup GUI Controls
+            setupGUI();
+
+            // 12. Handle Window Resize
+            window.addEventListener('resize', onWindowResize, false);
+
+            // 13. Start Animation Loop
+            animate();
+        }
+
+        // --- Function to Setup GUI ---
+        function setupGUI() {
+            gui = new GUI();
+            gui.title("Mezuzah Controls");
+
+            gui.addColor(params, 'epoxyColor').name('Epoxy Color')
+               .onChange((value) => {
+                   mezuzahMesh.material.color.set(value);
+               });
+
+            gui.addColor(params, 'shinColor').name('Shin Color')
+               .onChange((value) => {
+                   if (shinMaterial) {
+                      shinMaterial.color.set(value);
+                   }
+               });
+
+            gui.add(params, 'elementCount', 0, 50, 1).name('Element Count')
+               .onChange(() => {
+                    params.regenerateElements();
+               });
+        }
+
+        // --- Function to Clear Embedded Elements ---
+        function clearElements() {
+            while (elementsGroup.children.length > 0) {
+                const child = elementsGroup.children[0];
+                elementsGroup.remove(child);
+                if (child.geometry) child.geometry.dispose();
+                if (child.material) {
+                    if (child.material.map) child.material.map.dispose();
+                    child.material.dispose();
+                }
+            }
+        }
+
+        // --- Function to Create Embedded Elements using PNGs ---
+        function createEmbeddedElements(count, imageUrls, width, height, depth) {
+            if (!imageUrls || imageUrls.length === 0) {
+                console.warn("No image URLs provided for embedded elements.");
+                return;
+            }
+
+            const elementSize = 0.5; // Base size for the plane displaying the image
+
+            for (let i = 0; i < count; i++) {
+                const imageUrl = imageUrls[Math.floor(Math.random() * imageUrls.length)];
+
+                textureLoader.load(
+                    imageUrl, // Now using relative path or full URL
+                    (texture) => {
+                        // Success loading texture
+                        const aspectRatio = texture.image ? texture.image.width / texture.image.height : 1;
+                        const planeWidth = aspectRatio >= 1 ? elementSize * aspectRatio : elementSize;
+                        const planeHeight = aspectRatio < 1 ? elementSize / aspectRatio : elementSize;
+                        const geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
+
+                        const material = new THREE.MeshStandardMaterial({
+                            map: texture,
+                            transparent: true,
+                            side: THREE.DoubleSide,
+                            alphaTest: 0.1, // Adjust if transparency edges look bad
+                            roughness: 0.8,
+                            metalness: 0.1
+                        });
+
+                        const element = new THREE.Mesh(geometry, material);
+
+                        // Position inside the rounded box
+                        const innerWidth = width - mezuzahRadius * 2 - 0.2;
+                        const innerHeight = height - mezuzahRadius * 2 - 0.2;
+                        const innerDepth = depth - mezuzahRadius * 2 - 0.2;
+
+                        element.position.x = (Math.random() - 0.5) * innerWidth;
+                        element.position.y = (Math.random() - 0.5) * innerHeight;
+                        element.position.z = (Math.random() - 0.5) * innerDepth;
+
+                        // Random rotation
+                        element.rotation.x = Math.random() * Math.PI * 2;
+                        element.rotation.y = Math.random() * Math.PI * 2;
+                        element.rotation.z = Math.random() * Math.PI * 2;
+
+                        element.castShadow = true;
+                        element.receiveShadow = true; // Less critical inside transparent object
+
+                        elementsGroup.add(element);
+                    },
+                    undefined, // Optional progress callback
+                    (error) => {
+                        // Error loading texture
+                        console.error(`Error loading texture: ${imageUrl}`, error);
+                        // Add fallback placeholder on error
+                         const fallbackGeo = new THREE.BoxGeometry(elementSize*0.5, elementSize*0.5, 0.05);
+                         const fallbackMat = new THREE.MeshBasicMaterial({ color: 0xff0000, wireframe: true }); // Red wireframe indicates error
+                         const fallbackElement = new THREE.Mesh(fallbackGeo, fallbackMat);
+                         // Attempt to position the fallback where the failed image would have been
+                         const innerWidth = width - mezuzahRadius * 2 - 0.2;
+                         const innerHeight = height - mezuzahRadius * 2 - 0.2;
+                         const innerDepth = depth - mezuzahRadius * 2 - 0.2;
+                         fallbackElement.position.x = (Math.random() - 0.5) * innerWidth;
+                         fallbackElement.position.y = (Math.random() - 0.5) * innerHeight;
+                         fallbackElement.position.z = (Math.random() - 0.5) * innerDepth;
+                         elementsGroup.add(fallbackElement);
+                         console.warn(`Added red wireframe box as fallback for missing/error image: ${imageUrl}`);
+                    }
+                );
+            }
+        }
+
+        // --- Function to Create Shin Letter ---
+        function createShinLetter(mWidth, mHeight, mDepth, mRadius) {
+            shinMaterial = new THREE.MeshStandardMaterial({ color: params.shinColor, roughness: 0.4 });
+            const barWidth = 0.1;
+            const barHeight = 0.6;
+            const barDepth = 0.1;
+            const barGeometry = new THREE.BoxGeometry(barWidth, barHeight, barDepth);
+            const baseGeometry = new THREE.BoxGeometry(mWidth * 0.5, barWidth, barDepth);
+            // Position slightly proud of the surface
+            const frontOffset = mDepth / 2 + barDepth / 2 + 0.01;
+
+            const bar1 = new THREE.Mesh(barGeometry, shinMaterial);
+            bar1.position.set(-0.25, mHeight * 0.3, frontOffset);
+            bar1.rotation.z = Math.PI / 16;
+
+            const bar2 = new THREE.Mesh(barGeometry, shinMaterial);
+            bar2.position.set(0, mHeight * 0.3, frontOffset);
+
+            const bar3 = new THREE.Mesh(barGeometry, shinMaterial);
+            bar3.position.set(0.25, mHeight * 0.3, frontOffset);
+            bar3.rotation.z = -Math.PI / 16;
+
+            const base = new THREE.Mesh(baseGeometry, shinMaterial);
+            base.position.set(0, mHeight * 0.3 - barHeight / 2 + barWidth / 2, frontOffset);
+
+            bar1.castShadow = true;
+            bar2.castShadow = true;
+            bar3.castShadow = true;
+            base.castShadow = true;
+
+            shinGroup.add(bar1);
+            shinGroup.add(bar2);
+            shinGroup.add(bar3);
+            shinGroup.add(base);
+        }
+
+        // --- Handle Window Resize ---
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // --- Animation Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update(); // Update orbit controls
+            renderer.render(scene, camera);
+        }
+
+        // --- Start the application ---
+        init();
+
+    </script>
+
+</body>
+</html>
